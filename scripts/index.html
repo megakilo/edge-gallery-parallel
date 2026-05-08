@@ -1,167 +1,189 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Exa Search</title>
-  </head>
-  <body>
-    <script>
-      /**
-       * Calls the Exa /search API and returns formatted results.
-       *
-       * @param {string} query - The search query.
-       * @param {number} numResults - Number of results to return.
-       * @param {string|null} category - Optional category filter.
-       * @param {string} apiKey - The Exa API key (passed via secret).
-       * @returns {Promise<object>} - The formatted result or error object.
-       */
-      async function searchExa(query, numResults, category, apiKey) {
-        const url = "https://api.exa.ai/search";
 
-        // Build the request body
-        const body = {
-          query: query,
-          type: "auto",
-          numResults: numResults,
-          contents: {
-            highlights: {
-              maxCharacters: 3000,
-            },
-            text: {
-              maxCharacters: 1000,
-            },
-          },
-        };
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Parallel AI Search</title>
+</head>
 
-        if (category) {
-          body.category = category;
-        }
+<body>
+  <script>
+    /**
+     * Calls the Parallel AI /v1/search API and returns formatted results.
+     *
+     * @param {string} query - The search query.
+     * @param {number} maxResults - Max number of results to return (1-10).
+     * @param {string} apiKey - The Parallel API key (passed via secret).
+     * @returns {Promise<object>} - The formatted result or error object.
+     */
+    async function searchParallel(query, maxResults, apiKey) {
+      const url = "https://api.parallel.ai/v1/search";
 
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": apiKey,
-          },
-          body: JSON.stringify(body),
-        });
+      // Build the request body
+      const body = {
+        search_queries: [query],
+        mode: "advanced",
+        advanced_settings: {
+          max_results: maxResults,
+        },
+      };
 
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(
-            `Exa API returned HTTP ${response.status}: ${errorText}`
-          );
-        }
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify(body),
+      });
 
-        const data = await response.json();
-
-        if (!data.results || data.results.length === 0) {
-          return { result: `No results found for query: "${query}"` };
-        }
-        console.warning("response: " + data.results);
-
-        // Format the results into a readable string for the LLM
-        let output = `--- EXA SEARCH RESULTS for "${query}" ---\n`;
-        output += `Found ${data.results.length} result(s).\n\n`;
-
-        data.results.forEach((item, index) => {
-          output += `### Result ${index + 1}\n`;
-          output += `**Title:** ${item.title || "N/A"}\n`;
-          output += `**URL:** ${item.url || "N/A"}\n`;
-
-          if (item.publishedDate) {
-            output += `**Published:** ${item.publishedDate}\n`;
-          }
-          if (item.author) {
-            output += `**Author:** ${item.author}\n`;
-          }
-
-          // Include highlights if available
-          if (item.highlights && item.highlights.length > 0) {
-            output += `**Highlights:**\n`;
-            item.highlights.forEach((h) => {
-              output += `  - ${h}\n`;
-            });
-          }
-
-          // Include summary if available
-          if (item.summary) {
-            output += `**Summary:** ${item.summary}\n`;
-          }
-
-          // Include text snippet if available and no highlights/summary
-          if (
-            item.text &&
-            (!item.highlights || item.highlights.length === 0) &&
-            !item.summary
-          ) {
-            const snippet =
-              item.text.length > 500
-                ? item.text.substring(0, 500) + "..."
-                : item.text;
-            output += `**Excerpt:** ${snippet}\n`;
-          }
-
-          output += "\n";
-        });
-
-        // Cap total output to avoid blowing up on-device LLM context
-        const maxChars = 6000;
-        if (output.length > maxChars) {
-          output =
-            output.substring(0, maxChars) +
-            "\n\n... [TRUNCATED TO SAVE CONTEXT]";
-        }
-        console.warning("final output: " + output);
-        return { result: output };
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Parallel AI API returned HTTP ${response.status}: ${errorText}`
+        );
       }
 
-      /**
-       * Entry point called by the AI Edge Gallery app.
-       * @param {string} data - Stringified JSON with { query, numResults?, category? }
-       * @param {string} secret - The Exa API key
-       */
-      window["ai_edge_gallery_get_result"] = async (data, secret) => {
-        try {
-          if (!secret || secret.trim() === "") {
-            return JSON.stringify({
-              error:
-                "No Exa API key provided. Please enter your API key in the secret prompt.",
-            });
-          }
-          console.warning("entered the callback");
-          const jsonData = JSON.parse(data);
-          console.warning("parsed data");
-          if (!jsonData.query) {
-            return JSON.stringify({
-              error: "No query provided. Please specify a search query.",
-            });
-          }
-          console.warning("prepare query");
+      const data = await response.json();
+      console.warning("response: " + JSON.stringify(data));
 
-          const query = jsonData.query;
-          const numResults = Math.min(
-            Math.max(parseInt(jsonData.numResults) || 5, 1),
-            10
-          );
-          const category = jsonData.category || null;
+      // The Parallel API returns results keyed by query
+      const queryResults = data.results || data.search_results || [];
 
-          const searchResult = await searchExa(
-            query,
-            numResults,
-            category,
-            secret
-          );
-          console.warning("search complete");
-          return JSON.stringify(searchResult);
-        } catch (e) {
-          console.error(e);
-          return JSON.stringify({
-            error: `Failed to search Exa: ${e.message}`,
+      // Flatten results — Parallel may nest results per query
+      let items = [];
+      if (Array.isArray(queryResults)) {
+        queryResults.forEach((qr) => {
+          if (qr.results && Array.isArray(qr.results)) {
+            items = items.concat(qr.results);
+          } else if (qr.url || qr.title) {
+            // Results may already be flat
+            items.push(qr);
+          }
+        });
+      }
+
+      // If we still have no items, try top-level data as a flat list
+      if (items.length === 0 && Array.isArray(data)) {
+        items = data;
+      }
+
+      if (items.length === 0) {
+        return { result: `No results found for query: "${query}"` };
+      }
+
+      // Format the results into a readable string for the LLM
+      let output = `--- PARALLEL AI SEARCH RESULTS for "${query}" ---\n`;
+      output += `Found ${items.length} result(s).\n\n`;
+
+      items.forEach((item, index) => {
+        output += `### Result ${index + 1}\n`;
+        output += `**Title:** ${item.title || "N/A"}\n`;
+        output += `**URL:** ${item.url || "N/A"}\n`;
+
+        if (item.published_date || item.publishedDate) {
+          output += `**Published:** ${item.published_date || item.publishedDate}\n`;
+        }
+        if (item.author) {
+          output += `**Author:** ${item.author}\n`;
+        }
+
+        // Include highlights if available
+        if (item.highlights && item.highlights.length > 0) {
+          output += `**Highlights:**\n`;
+          item.highlights.forEach((h) => {
+            const text = typeof h === "string" ? h : h.text || h;
+            output += `  - ${text}\n`;
           });
         }
-      };
-    </script>
-  </body>
+
+        // Include summary/snippet if available
+        if (item.summary) {
+          output += `**Summary:** ${item.summary}\n`;
+        } else if (item.snippet) {
+          output += `**Snippet:** ${item.snippet}\n`;
+        } else if (item.content) {
+          const snippet =
+            item.content.length > 500
+              ? item.content.substring(0, 500) + "..."
+              : item.content;
+          output += `**Excerpt:** ${snippet}\n`;
+        }
+
+        // Include text if no other content fields matched
+        if (
+          item.text &&
+          !item.summary &&
+          !item.snippet &&
+          !item.content &&
+          (!item.highlights || item.highlights.length === 0)
+        ) {
+          const snippet =
+            item.text.length > 500
+              ? item.text.substring(0, 500) + "..."
+              : item.text;
+          output += `**Excerpt:** ${snippet}\n`;
+        }
+
+        output += "\n";
+      });
+
+      // Cap total output to avoid blowing up on-device LLM context
+      const maxChars = 6000;
+      if (output.length > maxChars) {
+        output =
+          output.substring(0, maxChars) +
+          "\n\n... [TRUNCATED TO SAVE CONTEXT]";
+      }
+      console.warning("final output: " + output);
+      return { result: output };
+    }
+
+    /**
+     * Entry point called by the AI Edge Gallery app.
+     * @param {string} data - Stringified JSON with { query, numResults? }
+     * @param {string} secret - The Parallel AI API key
+     */
+    window["ai_edge_gallery_get_result"] = async (data, secret) => {
+      try {
+        if (!secret || secret.trim() === "") {
+          return JSON.stringify({
+            error:
+              "No Parallel API key provided. Please enter your API key in the secret prompt.",
+          });
+        }
+        console.warning("entered the callback");
+        const jsonData = JSON.parse(data);
+        console.warning("parsed data");
+        if (!jsonData.query) {
+          return JSON.stringify({
+            error: "No query provided. Please specify a search query.",
+          });
+        }
+        console.warning("prepare query");
+
+        const query = jsonData.query;
+        const maxResults = Math.min(
+          Math.max(parseInt(jsonData.numResults) || 5, 1),
+          10
+        );
+
+        const searchResult = await searchParallel(
+          query,
+          maxResults,
+          secret
+        );
+        console.warning("search complete");
+        return JSON.stringify(searchResult);
+      } catch (e) {
+        console.error(e);
+        return JSON.stringify({
+          error: `Failed to search Parallel AI: ${e.message}`,
+        });
+      }
+    };
+  </script>
+</body>
+
 </html>
